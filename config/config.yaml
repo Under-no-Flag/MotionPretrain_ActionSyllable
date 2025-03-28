@@ -1,0 +1,6 @@
+
+data_dir: ./data/h3.6m
+batch_size: 16
+lr: 0.0001
+epochs: 200
+save_dir: checkpoints/

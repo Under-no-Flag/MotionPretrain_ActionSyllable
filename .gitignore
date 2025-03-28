@@ -1,0 +1,7 @@
+checkpoints/
+compare_plots/
+data/h3.6m/
+output_vqfinal/h36m_exp_debug/
+pre_analysis/cluster_visualization/
+pre_analysis/frame_cluster_visualization/
+work_dir/
