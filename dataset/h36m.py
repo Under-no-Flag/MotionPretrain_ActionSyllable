@@ -85,13 +85,13 @@ class HumanVQVAESixDDataSet(Dataset):
                  input_length=50,
                  predicted_length=25,
                  max_seq_len=64,
-                 sixd_scale=1.0):
+                 xyz_scale=300.0):
         """
         增加 xyz 的读取和拆分，便于后续计算 MPJPE
         """
         self.path_to_data = os.path.join(data_dir, f'h36m_{split}_{input_length + predicted_length}.npz')
         self.max_seq_len = max_seq_len
-        self.sixd_scale = sixd_scale
+        self.xyz_scale = xyz_scale
 
         self.processed_sixd = []
         self.processed_xyz = []  # 用来存储对应的 3D 坐标
@@ -105,7 +105,8 @@ class HumanVQVAESixDDataSet(Dataset):
             # 逐序列处理
             for seq_6d, seq_xyz,seq_label in tqdm(zip(all_sixd, all_xyz,all_label), desc="Processing data"):
                 # 根据需要对 6D 做缩放
-                seq_6d = seq_6d * self.sixd_scale
+                # seq_6d = seq_6d * self.sixd_scale
+                seq_xyz = seq_xyz / self.xyz_scale
                 # 拆分为若干片段
                 split_seqs_6d  = self._split_seq(seq_6d, self.max_seq_len)
                 split_seqs_xyz = self._split_seq(seq_xyz, self.max_seq_len)
@@ -132,6 +133,7 @@ class HumanVQVAESixDDataSet(Dataset):
         seq_xyz = seq_xyz.float()  # (T, V, 3)
 
         seq_6d = seq_6d.view(seq_6d.shape[0], -1)
+        seq_xyz = seq_xyz.view(seq_xyz.shape[0], -1)
 
         return seq_6d, seq_xyz,label
 
@@ -174,7 +176,7 @@ if __name__=="__main__":
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
 
     # 验证数据形状
-    sample,_ ,_= next(iter(dataloader))
+    _,sample ,_= next(iter(dataloader))
     print(f"输入数据形状: {sample.shape}")  # 期望形状 (32, T, V*C)
 
     # 测试VQ-VAE重构
@@ -184,7 +186,7 @@ if __name__=="__main__":
     output_emb_width = 128
     down_t = 3
     stride_t = 2
-    width = 1024
+    width = 512
     depth = 3
     dilation_growth_rate = 3
     activation = 'relu'

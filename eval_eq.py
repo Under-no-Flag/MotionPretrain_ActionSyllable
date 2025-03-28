@@ -108,7 +108,7 @@ class EvaluatorVQ:
             input_length=self.args.input_length,
             predicted_length=self.args.predicted_length,
             max_seq_len=self.args.max_seq_len,
-            sixd_scale=self.args.sixd_scale
+            xyz_scale=self.args.xyz_scale
         )
         loader = DataLoader(dataset, batch_size=self.args.batch_size, shuffle=False)
         return loader
@@ -120,48 +120,27 @@ class EvaluatorVQ:
                 # batch_xyz:  (B, T, V, 3)
                 # batch_label:(B, )
 
-                batch_6d   = batch_6d.to(self.device)
                 batch_xyz  = batch_xyz.to(self.device)
                 batch_label= batch_label.to(self.device)
 
                 # 前向推理，得到重构的 6D
-                recon_6d, _, _ = self.net(batch_6d)  # (B, T, V*6)
-
-                # (1) --- 计算 6D 重构误差 ---
-                #    这里示例对 V*6 做 L2 norm，再对 V*6 取平均 (也可以先reshape成 (B,T,V,6) 再对V和6均值)
-                #    shape: recon_6d, batch_6d => (B, T, V*6)
-                sixd_diff = recon_6d - batch_6d  # (B, T, V*6)
-                # 对最后一维 (V*6) 做 L2 norm => (B, T)
-                # 注意：torch.norm(..., dim=-1) 是 sqrt(∑x^2)，如果想要 mean square 可以改成 squared, etc.
-                sixd_l2 = torch.norm(sixd_diff, dim=-1)  # (B, T)
-
-                # 调整形状: (B, T, V*6) -> (B, T, V, 6)
-                B, T, VC = recon_6d.shape
-                V = VC // 6
-                recon_6d = recon_6d.view(B, T, V, 6)
+                recon_xyz, _, _ = self.net(batch_xyz)  # (B, T, V*6)
 
 
-                # 转 3D
-                # 如果 sixd_to_xyz_torch 要求 (B, T, V, 6)，则可以直接传
-                pred_xyz = sixd_to_xyz_torch(recon_6d)  # (B, T, V, 3)
+                mpjpe_b_t = torch.norm(recon_xyz.sub(batch_xyz), dim=-1)  # (B, T, V)
 
-                diff = pred_xyz - batch_xyz  # (B, T, V, 3)
-                dist = torch.norm(diff, dim=-1)  # (B, T, V)
-                mpjpe_b_t = dist.mean(dim=-1)  # (B, T)
 
                 # 按动作类别，存入 self.test_mpjpe[label]
                 # 假设 self.test_mpjpe[action_label] 是一个 list，用来装形状 (T,) 的张量
                 for i in range(batch_6d.shape[0]):
                     a_label = int(batch_label[i].item())
                     # 取出该样本的 (T,) mpjpe
-                    sample_error = mpjpe_b_t[i]  # shape: (T,)
+                    sample_error = mpjpe_b_t[i]*self.args.xyz_scale  # shape: (T,)
                     # 转到 CPU，避免后续堆叠时 GPU/CPU 混合
                     sample_error = sample_error.detach().cpu().numpy()
                     self.test_mpjpe[a_label].append(sample_error)
 
-                    # 6D error
-                    sample_error_6d = sixd_l2[i].detach().cpu().numpy()  # shape = (T,)
-                    self.test_6derr[a_label].append(sample_error_6d)
+
 
         # 全部评估结束后，打印结果
         self.summarize_results()
@@ -174,9 +153,6 @@ class EvaluatorVQ:
         self.print_log("=== Per-Class MPJPE ===")
         self._print_action_error_table(self.test_mpjpe, T, title="MPJPE")
 
-        # --- 再打印 6D 重构误差 ---
-        self.print_log("=== Per-Class 6D Error ===")
-        self._print_action_error_table(self.test_6derr, T, title="6D Error")
 
     def _print_action_error_table(self, error_dict, T, title=""):
         """

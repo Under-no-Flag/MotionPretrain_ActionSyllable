@@ -49,7 +49,7 @@ if __name__ == "__main__":
         data_dir='./data/h3.6m',
         split='train',
         max_seq_len=args.window_size,
-        sixd_scale=1.0
+        xyz_scale=args.xyz_scale
     )
     train_loader = DataLoader(
         train_dataset,
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         data_dir='./data/h3.6m',
         split='val',
         max_seq_len=args.window_size,
-        sixd_scale=1.0
+        xyz_scale=args.xyz_scale
     )
     val_loader = DataLoader(
         val_dataset,
@@ -115,13 +115,13 @@ if __name__ == "__main__":
         avg_recons, avg_commit = 0.0, 0.0
 
         # 训练阶段
-        for batch_idx, (data,_,_) in enumerate(train_loader):
+        for batch_idx, (input_sixd,data,_) in enumerate(train_loader):
             if torch.cuda.is_available():
                 data = data.cuda().float()  # (B, V*C, T)
 
             # 前向传播
             pred_motion, loss_commit, _ = net(data)
-
+            # print(pred_motion.shape)
             # 计算损失
             loss_recons = loss_func(pred_motion, data)
             loss = loss_recons + args.commit * loss_commit
@@ -153,7 +153,7 @@ if __name__ == "__main__":
             net.eval()
             with torch.no_grad():
                 val_recons = 0.0
-                for val_data,_,_ in val_loader:
+                for _,val_data,_ in val_loader:
                     if torch.cuda.is_available():
                         val_data = val_data.cuda().float()
 

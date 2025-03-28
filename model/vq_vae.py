@@ -22,9 +22,9 @@ class VQVAE_251(nn.Module):
         self.code_dim = code_dim
         self.num_code = nb_code
         self.quant = args.quantizer
-        self.encoder = Encoder(192 if args.dataname == 'h36m' else 263, output_emb_width, down_t, stride_t, width, depth,
+        self.encoder = Encoder(96 if args.dataname == 'h36m' else 263, output_emb_width, down_t, stride_t, width, depth,
                                dilation_growth_rate, activation=activation, norm=norm)
-        self.decoder = Decoder(192 if args.dataname == 'h36m' else 263, output_emb_width, down_t, stride_t, width, depth,
+        self.decoder = Decoder(96 if args.dataname == 'h36m' else 263, output_emb_width, down_t, stride_t, width, depth,
                                dilation_growth_rate, activation=activation, norm=norm)
         if args.quantizer == "ema_reset":
             self.quantizer = QuantizeEMAReset(nb_code, code_dim, args)

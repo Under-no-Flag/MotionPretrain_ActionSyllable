@@ -10,13 +10,16 @@ def get_args_parser():
     ## dataloader
     parser.add_argument('--dataname', type=str, default='h36m', help='dataset directory')
     parser.add_argument('--batch-size', default=256, type=int, help='batch size')
+
+    #dataset
     parser.add_argument('--window-size', type=int, default=64, help='training motion length')
+    parser.add_argument('--xyz-scale', type=float, default=1.0, help='xyz scale')
 
     ## optimization
     parser.add_argument('--total-iter', default=200000, type=int, help='number of total iterations to run')
     parser.add_argument('--total-epoch', default=300, type=int, help='number of total epoch to run')
     parser.add_argument('--warm-up-iter', default=1000, type=int, help='number of total iterations for warmup')
-    parser.add_argument('--lr', default=2e-4, type=float, help='max learning rate')
+    parser.add_argument('--lr', default=1e-4, type=float, help='max learning rate')
     parser.add_argument('--lr-scheduler', default=[50, 200], nargs="+", type=int,
                         help="learning rate schedule (iterations)")
     parser.add_argument('--gamma', default=0.05, type=float, help="learning rate decay")
@@ -28,11 +31,11 @@ def get_args_parser():
 
     ## vqvae arch
     parser.add_argument("--code-dim", type=int, default=512, help="embedding dimension")
-    parser.add_argument("--nb-code", type=int, default=1024, help="nb of embedding")
+    parser.add_argument("--nb-code", type=int, default=512, help="nb of embedding")
     parser.add_argument("--mu", type=float, default=0.99, help="exponential moving average to update the codebook")
     parser.add_argument("--down-t", type=int, default=2, help="downsampling rate")
     parser.add_argument("--stride-t", type=int, default=2, help="stride size")
-    parser.add_argument("--width", type=int, default=1024, help="width of the network")
+    parser.add_argument("--width", type=int, default=512, help="width of the network")
     parser.add_argument("--depth", type=int, default=3, help="depth of the network")
     parser.add_argument("--dilation-growth-rate", type=int, default=3, help="dilation growth rate")
     parser.add_argument("--output-emb-width", type=int, default=512, help="output embedding width")
