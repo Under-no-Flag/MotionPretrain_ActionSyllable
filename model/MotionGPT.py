@@ -98,8 +98,8 @@ class SpatioTemporalAttention(nn.Module):
         return self.merge(combined)
 
 class MotionGPT(nn.Module):
-    def __init__(self, d_model=64, n_heads=4, num_layers=10,
-                 max_seq_len=50, input_dim=6, output_dim=3):
+    def __init__(self, d_model=64, n_heads=4, num_layers=6,
+                 max_seq_len=64, input_dim=6, output_dim=3):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, d_model)
         self.decoder = Decoder(d_model, n_heads, num_layers, max_seq_len)
@@ -129,8 +129,8 @@ class MotionLoss(nn.Module):
 
 if __name__ == "__main__":
     # 测试样例
-    B, T, V, C = 32, 50, 23, 6  # Batch, 帧数, 关节数, 输入维度(6D旋转)
-    model = MotionGPT(input_dim=6, output_dim=6)
+    B, T, V, C = 1, 64, 50, 6  # Batch, 帧数, 关节数, 输入维度(6D旋转)
+    model = MotionGPT(input_dim=6, output_dim=6,num_layers=10,d_model=64)
     input_seq = torch.randn(B, T, V, C)
 
     # 预测下一帧的3D坐标
