@@ -131,7 +131,7 @@ class HumanVQVAESixDDataSet(Dataset):
         seq_6d  = seq_6d.float()   # (T, V, 6)
         seq_xyz = seq_xyz.float()  # (T, V, 3)
 
-        seq_6d = seq_6d.view(seq_6d.shape[0], -1)
+        # seq_6d = seq_6d.view(seq_6d.shape[0], -1)
 
         return seq_6d, seq_xyz,label
 

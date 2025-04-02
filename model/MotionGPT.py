@@ -144,3 +144,6 @@ if __name__ == "__main__":
 
     print('FLOPs:', flops / 1e6, 'M')  # 将FLOPs转换为G（十亿）
     print('Params:', params / 1e6, 'M')  # 将参数量转换为M（百万）
+
+    print("number of parameters: {} M".format( sum(p.numel() for p in model.parameters())/1e6))
+    print("number of parameters: {} M".format( sum(p.numel() for p in SpatioTemporalAttention(dim=64,n_heads=4).parameters())/1e6))
