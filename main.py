@@ -31,6 +31,14 @@ class Processor:
         self.load_model()
         self.load_data()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=args.lr)
+
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',     # 监控验证损失的最小化
+            patience=3,     # 3个epoch无改善后调整学习率
+            factor=0.5,    # 学习率衰减比例为0.5
+            verbose=True    # 打印调整信息
+        )
         self.criterion = MotionLoss()
 
     def load_model(self):
@@ -107,9 +115,13 @@ class Processor:
             train_loss = self.train_epoch()
             val_loss = self.validate()
 
+            # 根据验证损失更新学习率
+            self.scheduler.step(val_loss)
+
             print(f'Epoch {epoch + 1}/{self.args.epochs}')
             print(f'Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}')
-
+            #print lr
+            print(f'Learning Rate: {self.optimizer.param_groups[0]["lr"]:.6f}')
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(self.model.state_dict(), f'{self.args.save_dir}/best_model.pth')

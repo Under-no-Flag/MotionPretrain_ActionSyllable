@@ -129,7 +129,7 @@ class MotionLoss(nn.Module):
 
 if __name__ == "__main__":
     # 测试样例
-    B, T, V, C = 1, 64, 50, 6  # Batch, 帧数, 关节数, 输入维度(6D旋转)
+    B, T, V, C = 1, 64, 32, 6  # Batch, 帧数, 关节数, 输入维度(6D旋转)
     model = MotionGPT(input_dim=6, output_dim=6,num_layers=10,d_model=64)
     input_seq = torch.randn(B, T, V, C)
 

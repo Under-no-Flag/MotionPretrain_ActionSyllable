@@ -93,11 +93,12 @@ class Base_STAttention(nn.Module):
 
         # 初始化因果掩码
         self.register_buffer("causal_mask", None)
+        self.causal_mask = self._generate_causal_mask(128)
 
-    def _generate_causal_mask(self, T, device):
+    def _generate_causal_mask(self, T=128,):
         """生成时间维度的因果掩码"""
         return torch.triu(
-            torch.ones(T, T, device=device, dtype=torch.bool),
+            torch.ones(T, T,  dtype=torch.bool),
             diagonal=1
         )
 
@@ -118,8 +119,7 @@ class Base_STAttention(nn.Module):
         att = (q_t @ k_t.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))  # [B*V, nh, T, T]
 
         # 应用因果掩码
-        if self.causal_mask is None or self.causal_mask.size(0) < T:
-            self.causal_mask = self._generate_causal_mask(T, device)
+
         att = att.masked_fill(self.causal_mask[:T, :T].unsqueeze(0).unsqueeze(0), float('-inf'))
 
         # Softmax和投影

@@ -9,14 +9,14 @@ def get_args_parser():
 
     ## dataloader
     parser.add_argument('--dataname', type=str, default='h36m', help='dataset directory')
-    parser.add_argument('--batch-size', default=32, type=int, help='batch size')
+    parser.add_argument('--batch-size', default=8, type=int, help='batch size')
     parser.add_argument('--window-size', type=int, default=64, help='training motion length')
 
     ## optimization
     parser.add_argument('--total-iter', default=200000, type=int, help='number of total iterations to run')
     parser.add_argument('--total-epoch', default=300, type=int, help='number of total epoch to run')
     parser.add_argument('--warm-up-iter', default=1000, type=int, help='number of total iterations for warmup')
-    parser.add_argument('--lr', default=1e-3, type=float, help='max learning rate')
+    parser.add_argument('--lr', default=5e-3, type=float, help='max learning rate')
     parser.add_argument('--lr-scheduler', default=[50, 200], nargs="+", type=int,
                         help="learning rate schedule (iterations)")
     parser.add_argument('--gamma', default=0.05, type=float, help="learning rate decay")
