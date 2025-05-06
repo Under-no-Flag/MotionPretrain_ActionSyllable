@@ -12,6 +12,7 @@ import utils.utils_model as utils_model
 from dataset.h36m import HumanVQVAESixDDataSet  # 导入修改后的数据集类
 from model.transformer_vqvae import TransformerVQVAE  # 导入TransformerVQVAE模型
 from options import option_transformer_vqvae  # 导入TransformerVQVAE模型参数配置
+from model.motion_vqvae import MotionVQVAE  # 导入MotionVQVAE模型
 # 禁用警告
 import warnings
 
@@ -95,20 +96,35 @@ if __name__ == "__main__":
     )
 
     ##### ---- 模型初始化 ---- #####
-    net = TransformerVQVAE(
+    # net = TransformerVQVAE(
+    #     n_heads=4,
+    #     in_dim=6,
+    #     num_joints=32,
+    #     n_codebook=32,
+    #     balance=0,
+    #     n_e=512,
+    #     e_dim=512,
+    #     hid_dim=16,
+    #     beta=0.25,
+    #     quant_min_prop=1.0,
+    #     n_layers=[0, 16],
+    #     seq_len=64,
+    #     causal_encoder=True,
+    # )
+
+    net = MotionVQVAE(
         n_heads=4,
-        in_dim=6,
         num_joints=32,
+        in_dim=6,
         n_codebook=32,
         balance=0,
-        n_e=512,
-        e_dim=512,
-        hid_dim=16,
+        n_e=256,
+        e_dim=64,
+        hid_dim=64,
         beta=0.25,
         quant_min_prop=1.0,
-        n_layers=[0, 16],
+        n_layers=[0, 10],
         seq_len=64,
-        causal_encoder=True,
     )
     if torch.cuda.is_available():
         net = net.cuda()
@@ -124,8 +140,8 @@ if __name__ == "__main__":
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',       # 监控验证损失的最小化
-        factor=0.5,       # 学习率衰减比例为0.5
-        patience=3,       # 3个epoch无改善后调整学习率
+        factor=0.95,       # 学习率衰减比例为0.5
+        patience=8,       # 3个epoch无改善后调整学习率
         verbose=True      # 打印学习率调整日志
     )
 
@@ -142,32 +158,42 @@ if __name__ == "__main__":
         net.train()
         avg_recons, avg_commit = 0.0, 0.0
 
-        # 训练阶段
-        for batch_idx, (data,_,_) in tqdm(enumerate(train_loader),dynamic_ncols=True, desc=f"Training Epoch {epoch}: ", total=len(train_loader)):
+        progress_bar = tqdm(enumerate(train_loader), dynamic_ncols=True, desc=f"Training Epoch {epoch}",
+                            total=len(train_loader))
+
+        for batch_idx, (data, _, _) in progress_bar:
             if torch.cuda.is_available():
-                data = data.cuda().float()  # (B,  T,V,C)
+                data = data.cuda().float()
+
             # 前向传播
-            (pred_motion,), quant_item,_= net(x=data,y=0,valid=torch.ones(data.shape[0],data.shape[1]).to(data.device))
-            loss_commit = quant_item['quant_loss']
+            (pred_motion,), quant_item, _ = net(x=data, y=0,
+                                                valid=torch.ones(data.shape[0], data.shape[1]).to(data.device))
+
             # 计算损失
+            loss_commit = quant_item['quant_loss']
             loss_recons = loss_func(pred_motion, data)
-            # loss_geo=geo_loss_func(pred_motion)
-            loss = loss_recons + args.commit *loss_commit
+            loss = loss_recons + args.commit * loss_commit
 
             # 反向传播
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # 记录损失
+            # 更新进度条的损失信息（保留4位小数）
+            progress_bar.set_postfix(
+                recons_loss=f"{loss_recons.item():.4f}",
+                commit_loss=f"{loss_commit.item():.4f}",
+                total_loss=f"{loss.item():.4f}"
+            )
 
+            # 记录到监控器（假设monitor处理累积或日志）
             batch_size = data.size(0)
-            monitor.update(loss_recons.item(),
-                           loss_commit.item(),
-                           # loss_geo.item(),
-                           0,
-                           batch_size)
-
+            monitor.update(
+                loss_recons.item(),
+                loss_commit.item(),
+                0,
+                batch_size
+            )
 
 
 
@@ -188,7 +214,9 @@ if __name__ == "__main__":
             writer.add_scalar('Val/Recons', val_recons, epoch)
 
             scheduler.step(val_recons)
-
+            #print learning rate
+            for param_group in optimizer.param_groups:
+                logger.info(f"Learning Rate: {param_group['lr']:.6f}")
 
             # 保存最佳模型
             if val_recons < best_fid:

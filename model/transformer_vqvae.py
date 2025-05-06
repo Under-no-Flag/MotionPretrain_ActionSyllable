@@ -127,7 +127,7 @@ class Stack(nn.Module):
         x = x if x is not None else z
 
         t = x.shape[1]
-        assert t <= self.block_size, "Cannot forward, model block size is exhausted."
+        # assert t <= self.block_size, "Cannot forward, model block size is exhausted."
 
         if self.cat_down > 1:
             if self.cat_down != 2:

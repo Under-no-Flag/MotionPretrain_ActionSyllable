@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # VQVAE 模型
+from model.motion_vqvae import MotionVQVAE
 from model.transformer_vqvae import TransformerVQVAE
 # 修改后的数据集
 from dataset.h36m import HumanVQVAESixDDataSet
@@ -80,20 +81,35 @@ class EvaluatorVQ:
                 self.mu = 0.99
 
         dummy_args = DummyArgs()
-        net = TransformerVQVAE(
+        # net = TransformerVQVAE(
+        #     n_heads=4,
+        #     in_dim=6,
+        #     num_joints=32,
+        #     n_codebook=32,
+        #     balance=0,
+        #     n_e=512,
+        #     e_dim=256,
+        #     hid_dim=16,
+        #     beta=0.25,
+        #     quant_min_prop=1.0,
+        #     n_layers=[0, 16],
+        #     seq_len=64,
+        #     causal_encoder=True,
+        # )
+
+        net = MotionVQVAE(
             n_heads=4,
-            in_dim=6,
             num_joints=32,
+            in_dim=6,
             n_codebook=32,
             balance=0,
             n_e=512,
-            e_dim=256,
-            hid_dim=16,
+            e_dim=64,
+            hid_dim=64,
             beta=0.25,
             quant_min_prop=1.0,
-            n_layers=[0, 16],
+            n_layers=[0, 10],
             seq_len=64,
-            causal_encoder=True,
         )
         net.to(self.device)
 

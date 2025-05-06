@@ -109,7 +109,8 @@ class Base_STAttention(nn.Module):
         # ==== 时间维度注意力 ====
         # 重塑输入为 [B*V, T, D]
         x_temp = x.permute(0, 2, 1, 3).reshape(B * V, T, D)
-
+        if self.causal_mask.shape[0]!= T:
+            self.causal_mask = self._generate_causal_mask(T).to(device)
         # 计算Q, K, V
         k_t = self.temporal_key(x_temp).view(B * V, T, self.n_heads, self.head_dim).transpose(1, 2)  # [B*V, nh, T, hd]
         q_t = self.temporal_query(x_temp).view(B * V, T, self.n_heads, self.head_dim).transpose(1, 2)
