@@ -5,7 +5,7 @@ from typing import List
 import torch
 import torch.nn as nn
 from typing import List, Sequence
-
+from torch.functional import F
 
 """ VectorQuantizer code adapted from by https://github.com/CompVis/taming-transformers/taming/modules/vqvae/quantize.py"""
 
@@ -389,6 +389,269 @@ class ResidualVectorQuantizer(nn.Module):
         embs = [self.embeddings[str(i)](p.squeeze(-1)) for i, p in enumerate(parts)]
         return torch.stack(embs, dim=0).sum(0)
 
+class ResidualVectorQuantizerEMA(ResidualVectorQuantizer):
+    def __init__(self, *args, decay=0.99, eps=1e-5, **kw):
+        super().__init__(*args, **kw)
+        self.decay, self.eps = decay, eps
+        # 为每个 codebook加 EMA buffers
+        self.register_buffer("ema_cluster_size", torch.zeros(self.n_q, self.n_e))
+        self.register_buffer("ema_embed",        torch.zeros(self.n_q, self.n_e, self.e_dim))
+
+    def _quantize_stage(self, residual, stage):
+        flat = residual.view(-1, self.e_dim)
+        emb  = self.embeddings[str(stage)].weight      # (n_e, e_dim)
+        dist = L2_efficient(flat, emb.t())
+        idx  = torch.argmin(dist, dim=1)
+        one_hot = torch.zeros_like(dist).scatter_(1, idx.unsqueeze(1), 1)
+
+        # ---------- EMA UPDATE ----------
+        if self.training:
+            with torch.no_grad():  # ---①
+                n = one_hot.sum(0)
+                embed_sum = one_hot.T @ flat
+
+                # 下面统统用 .mul_ / .add_ 做 **原位更新**，避免重新分配
+                self.ema_cluster_size[stage].mul_(self.decay).add_(n, alpha=1 - self.decay)
+                self.ema_embed[stage].mul_(self.decay).add_(embed_sum, alpha=1 - self.decay)
+
+                # 归一化
+                den = self.ema_cluster_size[stage] + self.eps
+                self.embeddings[str(stage)].weight.copy_(self.ema_embed[stage] / den.unsqueeze(1))
+
+            # 同时仍可用 tracker 记录 usage 分布
+            self.trackers[stage].update(idx.detach())
+
+        q = emb[idx].view_as(residual)
+        return q, idx.view(*residual.shape[:-1], 1)
+
+
+class ResidualVectorQuantizerGCN(nn.Module):
+    def __init__(
+            self,
+            *,
+            adjacency: torch.Tensor,  # V×V 的邻接矩阵
+            e_dim: int,
+            **rvq_kwargs,  # 其余传给 ResidualVectorQuantizerGCN 基类，如 n_q, n_e, beta
+    ):
+        super().__init__()
+        # 复用之前的 RVQ 初始化
+        self.rvq = ResidualVectorQuantizer(e_dim=e_dim, **rvq_kwargs)
+
+        V = adjacency.size(0)
+        self.V = V
+        # 对称归一化邻接
+        A = adjacency + torch.eye(V, device=adjacency.device)
+        D = A.sum(1)
+        D_inv_sqrt = torch.diag(D.pow(-0.5))
+        A_norm = D_inv_sqrt @ A @ D_inv_sqrt
+        self.register_buffer("A_norm", A_norm)  # V×V
+
+        # 一个简单的线性层做消息变换
+        self.gcn_lin = nn.Linear(e_dim, e_dim)
+        self.relu = nn.LeakyReLU(0.2)
+        self.ln = nn.LayerNorm(e_dim) # 如果 e_dim 是特征维度
+        self.alpha = 0.1
+
+    def _gcn_refine(self, residual: torch.Tensor, prev_emb: torch.Tensor = None):
+        """
+        residual: [N, V, d]
+        prev_emb:  [N, V, d] or None
+        返回 [N, V, d]
+        """
+        # 融合前 k-1 级量化态
+        # fused = residual if prev_emb is None else residual + prev_emb
+        fused = residual
+        # GCN 聚合
+        neigh = torch.einsum("vw,nwd->nvd", self.A_norm, fused)
+        neigh = self.gcn_lin(neigh)
+        neigh = self.relu(neigh)  # [N, V, d]
+        neigh = self.ln(neigh) # LayerNorm 直接作用于最后一个维度
+        return fused + self.alpha*neigh  # [N, V, d]
+
+        # return residual
+
+    def forward(self, z: torch.Tensor, p: float = 1.0):
+        """
+        z: [B, T, V, C]
+        返回:
+          z_q:      [B, T, V, C]
+          loss:     scalar
+          indices:  [B, T, V, n_q]
+        """
+        B, T, V, d = z.shape
+        assert V == self.V and d == self.rvq.e_dim
+
+        # 合并 B,T 方便批量处理
+        z_flat = z.view(B * T, V, d)  # [N, V, d], N=B*T
+
+        residual = z_flat
+        cumulative_q = torch.zeros_like(z_flat)
+        losses = []
+        indices = []
+        prev_idx = None
+
+        # 按级量化
+        for k in range(self.rvq.n_q):
+            # 如果有前 k 级 idx，就解码出前 k 级 embedding
+            prev_emb = (
+                self.rvq.get_codebook_entry(prev_idx)
+                if prev_idx is not None else None
+            )  # [N, V, d] or None
+
+            # 1) 用 GCN 融合 refine
+            refined = self._gcn_refine(residual, prev_emb)
+
+            # 2) 再用RVQ原来的 _quantize_stage（只不过我们手动传入 refined）
+            #    这里绕过了原class的 residual 参数，直接把flat和stage送进去
+            emb_weight = self.rvq.embeddings[str(k)].weight  # (n_e, d)
+            flat = refined.view(-1, d)  # [N*V, d]
+            dist = L2_efficient(flat, emb_weight.t())  # [NV, n_e]
+            idx = torch.argmin(dist, dim=1)  # [NV]
+            one_hot = torch.zeros_like(dist).scatter_(1, idx.unsqueeze(1), 1)
+            q_flat = one_hot @ emb_weight  # [NV, d]
+            q = q_flat.view(B * T, V, d)  # [N, V, d]
+
+            if self.training:
+                self.rvq.trackers[k].update(idx.detach())
+
+            # 随机丢弃（保持原 semantics）
+            if p != 1.0:
+                mask = torch.bernoulli(p * torch.ones_like(q))
+                q = mask * q + (1 - mask) * residual
+
+            # 损失
+            commit = (residual.detach() - q).pow(2).mean(-1)  # [N, V]
+            codebok = (q - residual.detach()).pow(2).mean(-1)  # [N, V]
+            losses.append(commit + self.rvq.beta * codebok)
+
+            cumulative_q = cumulative_q + q
+            residual = residual - q
+
+            idx = idx.view(B * T, V, 1)  # [N, V, 1]
+            indices.append(idx)
+            prev_idx = torch.cat(indices, dim=-1)  # [N, V, k+1]
+
+        # STE
+        zq_flat = z_flat + (cumulative_q - z_flat).detach()  # [N, V, d]
+        total_loss = torch.stack(losses, 0).mean()
+
+        # 恢复形状
+        z_q = zq_flat.view(B, T, V, d)
+        indices = prev_idx.view(B, T, V, self.rvq.n_q)  # [B, T, V, n_q]
+
+        return z_q, total_loss, indices
+
+class ResidualVectorQuantizerGCNEMA(ResidualVectorQuantizerGCN):
+    """
+    GCN-conditioned RVQ + 指数移动平均(EMA) 码本更新。
+    继承自 ResidualVectorQuantizerGCN，只改动 _quantize-and-update 的
+    部分，其余接口保持不变。
+    """
+    def __init__(
+        self,
+        *,
+        adjacency: torch.Tensor,
+        e_dim: int,
+        decay: float = 0.95,
+        eps: float = 1e-5,
+        **rvq_kwargs,
+    ):
+        super().__init__(adjacency=adjacency, e_dim=e_dim, **rvq_kwargs)
+
+        # === 为每个 code-book 配置 EMA 缓存 ===========================
+        self.decay, self.eps = decay, eps
+        self.register_buffer("ema_cluster_size",
+                             torch.zeros(self.rvq.n_q, self.rvq.n_e))
+        self.register_buffer("ema_embed",
+                             torch.zeros(self.rvq.n_q, self.rvq.n_e, self.rvq.e_dim))
+
+    # ------------------------------------------------------------------
+    def _quantize_stage_with_ema(
+        self,
+        refined: torch.Tensor,          # [N, V, d] —— GCN 处理后的特征
+        stage: int
+    ):
+        """检索最近邻 **并** 执行 EMA 更新。返回 (q, idx, one_hot)。"""
+        N, V, d = refined.shape
+        flat = refined.reshape(-1, d)                     # [N*V, d]
+        emb_weight = self.rvq.embeddings[str(stage)].weight  # (n_e, d)
+        dist = L2_efficient(flat, emb_weight.t())         # [NV, n_e]
+        idx  = torch.argmin(dist, dim=1)                  # [NV]
+        one_hot = torch.zeros_like(dist).scatter_(1, idx.unsqueeze(1), 1)
+
+        # -------------------- EMA 更新 ------------------------------
+        if self.training:
+            with torch.no_grad():
+                n = one_hot.sum(0)                        # [n_e]
+                embed_sum = one_hot.T @ flat              # [n_e, d]
+
+                self.ema_cluster_size[stage].mul_(self.decay).add_(n,
+                                       alpha=1 - self.decay)
+                self.ema_embed[stage].mul_(self.decay).add_(embed_sum,
+                                       alpha=1 - self.decay)
+
+                # 归一化得到新的码本向量
+                denom = (self.ema_cluster_size[stage] + self.eps).unsqueeze(1)
+                self.rvq.embeddings[str(stage)].weight.copy_(
+                    self.ema_embed[stage] / denom
+                )
+
+            # 继续记录 tracker（可选）
+            self.rvq.trackers[stage].update(idx.detach())
+
+        # 取回量化向量
+        q_flat = emb_weight[idx]                          # [NV, d]
+        q = q_flat.view(N, V, d)
+        return q, idx.view(N, V, 1)                       # idx 形状保持一致
+
+    # ------------------------------------------------------------------
+    def forward(self, z: torch.Tensor, p: float = 1.0):
+        """
+        与父类接口完全一致，只把单级量化逻辑换成 _quantize_stage_with_ema。
+        """
+        B, T, V, d = z.shape
+        assert V == self.V and d == self.rvq.e_dim
+
+        # ---- 展平 B,T -------------------------------------------------
+        z_flat = z.view(B * T, V, d)          # N = B*T
+        residual     = z_flat
+        cumulative_q = torch.zeros_like(z_flat)
+        losses, indices = [], []
+        prev_idx = None
+
+        for k in range(self.rvq.n_q):
+            # === 1. 取前 k-1 级嵌入并做 GCN refine ====================
+            prev_emb = (self.rvq.get_codebook_entry(prev_idx)
+                        if prev_idx is not None else None)
+            refined = self._gcn_refine(residual, prev_emb)   # [N,V,d]
+
+            # === 2. 最近邻 + EMA 更新 =================================
+            q_k, idx_k = self._quantize_stage_with_ema(refined, k)
+
+            # === 3. 随机丢弃（保持原语义） ============================
+            if p != 1.0:
+                mask = torch.bernoulli(p * torch.ones_like(q_k))
+                q_k  = mask * q_k + (1 - mask) * residual
+
+            # === 4. 计算损失、累计结果 ================================
+            commit = (refined.detach() - q_k).pow(2).mean(-1)
+            codebok = (q_k - refined.detach()).pow(2).mean(-1)
+            losses.append(commit + self.rvq.beta * codebok)
+
+            cumulative_q += q_k
+            residual     -= q_k
+
+            indices.append(idx_k)
+            prev_idx = torch.cat(indices, dim=-1)           # [N, V, k+1]
+
+        # ---- 直通估计（STE） -----------------------------------------
+        zq_flat = z_flat + (cumulative_q - z_flat).detach()
+        total_loss = torch.stack(losses, 0).mean()
+
+        # ---- 恢复形状并返回 ------------------------------------------
+        z_q     = zq_flat.view(B, T, V, d)
+        indices = prev_idx.view(B, T, V, self.rvq.n_q)
+        return z_q, total_loss, indices
 
 
 if __name__ == "__main__":
@@ -396,12 +659,18 @@ if __name__ == "__main__":
     x = torch.randn(B, T, V, C, device="cuda")
     device = torch.device('cuda')
 
-
-
-
+    A = torch.zeros(32, 32)
+    edges=[(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 4), (4, 5), (5, 6)]
+    for i, j in edges:
+        A[i, j] = A[j, i] = 1
+    model= ResidualVectorQuantizerGCNEMA(
+        n_q=6, n_e=256, e_dim=C,adjacency=A,
+    ).to(device)
+    z_q, loss, idx = model(x)
+    print(z_q.shape, loss.item(), idx.shape)
 
     model = MCVectorQuantizer(n_e=1024, e_dim=C, beta=0.25, nbooks=32, balance=False).to(device)
-    rvq = ResidualVectorQuantizer(n_q=8, n_e=512, e_dim=C).cuda()
+    rvq = ResidualVectorQuantizerEMA(n_q=8, n_e=512, e_dim=C).cuda()
     z_q, loss, idx = rvq(x)
     print("RVQ", z_q.shape, loss.item(), idx.shape)
     # two forwards

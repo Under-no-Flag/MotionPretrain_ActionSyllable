@@ -19,7 +19,7 @@ from dataset.h36m import HumanVQVAESixDDataSet
 from options import option_vq
 from utils.forward_kinematics import sixd_to_xyz_torch
 from utils.func import str2bool
-
+from matplotlib import pyplot as plt
 
 def mpjpe_per_frame(pred_xyz, gt_xyz):
     """
@@ -60,6 +60,13 @@ class EvaluatorVQ:
         self.net = self.build_model()
         # 2. 加载数据
         self.test_loader = self.build_dataloader()
+        self.motion_chain = [
+            [0, 1, 2, 3, 4, 5],
+            [0, 6, 7, 8, 9, 10],
+            [0, 11, 12, 13, 14, 15],
+            [12, 16, 17, 18, 19, 20, 21, 22, 23],
+            [12, 24, 25, 26, 27, 28, 29, 30, 31],
+        ]
 
     def print_log(self, s, print_time=True):
         if print_time:
@@ -101,20 +108,21 @@ class EvaluatorVQ:
             n_heads=4,
             num_joints=32,
             in_dim=6,
-            n_codebook=32,
+            n_codebook=6,
             balance=0,
-            n_e=512,
-            e_dim=64,
-            hid_dim=64,
+            n_e=1024,
+            e_dim=128,
+            hid_dim=128,
             beta=0.25,
             quant_min_prop=1.0,
             n_layers=[0, 10],
             seq_len=64,
         )
+        print("Loading model from", self.args.model_path)
         net.to(self.device)
-
         # 加载权重
         ckpt = torch.load(self.args.model_path, map_location=self.device)
+        print("best val recon loss",ckpt['loss'])
         net.load_state_dict(ckpt['net'])
         net.eval()
         return net
@@ -133,7 +141,7 @@ class EvaluatorVQ:
 
     def evaluate(self):
         with torch.no_grad():
-            for batch_6d, batch_xyz, batch_label in tqdm(self.test_loader, desc="Evaluating"):
+            for batch_idx,(batch_6d, batch_xyz, batch_label) in enumerate(self.test_loader):
                 # batch_6d:   (B, T, V*6)  (示例)
                 # batch_xyz:  (B, T, V, 3)
                 # batch_label:(B, )
@@ -147,16 +155,17 @@ class EvaluatorVQ:
                                                   valid=torch.ones(batch_6d.shape[0], batch_6d.shape[1]).to(
                                                       batch_6d.device))
 
+
                 # (1) --- 计算 6D 重构误差 ---
-                #    这里示例对 V*6 做 L2 norm，再对 V*6 取平均 (也可以先reshape成 (B,T,V,6) 再对V和6均值)
-                #    shape: recon_6d, batch_6d => (B, T, V*6)
-                sixd_diff = recon_6d - batch_6d  # (B, T, V*6)
+                sixd_diff = recon_6d - batch_6d  # (B, T, V,6)
                 # 对最后一维 (V*6) 做 L2 norm => (B, T)
                 # 注意：torch.norm(..., dim=-1) 是 sqrt(∑x^2)，如果想要 mean square 可以改成 squared, etc.
+                sixd_err_j = torch.norm(sixd_diff, dim=-1)  # (B, T, V)
+
                 sixd_l2 = torch.norm(sixd_diff, dim=-1).mean(axis=-1)  # (B, T)
 
                 # 调整形状: (B, T, V*6) -> (B, T, V, 6)
-                # B, T, VC = recon_6d.shape
+                B, T, V,C = recon_6d.shape
                 # V = VC // 6
                 # recon_6d = recon_6d.view(B, T, V, 6)
 
@@ -166,6 +175,7 @@ class EvaluatorVQ:
                 pred_xyz = sixd_to_xyz_torch(recon_6d)  # (B, T, V, 3)
 
                 diff = pred_xyz - batch_xyz  # (B, T, V, 3)
+                mpjpe_j = torch.norm(diff, dim=-1)  # (B, T, V)
                 dist = torch.norm(diff, dim=-1)  # (B, T, V)
                 mpjpe_b_t = dist.mean(dim=-1)  # (B, T)
 
@@ -183,6 +193,37 @@ class EvaluatorVQ:
                     sample_error_6d = sixd_l2[i].detach().cpu().numpy()  # shape = (T,)
                     self.test_6derr[a_label].append(sample_error_6d)
 
+                # for i in range(B):
+                #     # 转到 numpy 方便处理
+                #     err6d_np = sixd_err_j[i].detach().cpu().numpy()  # (T, V)
+                #     err3d_np = mpjpe_j[i].detach().cpu().numpy()  # (T, V)
+                #
+                #     # 时序上取平均，得到每个关节的平均误差
+                #     mean6d_per_joint = err6d_np.mean(axis=0)  # (V,)
+                #     mean3d_per_joint = err3d_np.mean(axis=0)  # (V,)
+                #
+                #     # 对每条运动链，抽取对应关节的误差并打印／保存
+                #     for chain_idx, chain in enumerate(self.motion_chain):
+                #         chain_ids = np.array(chain)
+                #         chain_err6d = mean6d_per_joint[chain_ids]  # (chain_len,)
+                #         chain_err3d = mean3d_per_joint[chain_ids]
+                #
+                #         # —— 打印表格 ——
+                #         header = "Joint".ljust(8) + "".join(f"{jid:>8}" for jid in chain_ids)
+                #         row6d = "6D_err".ljust(8) + "".join(f"{v:8.3f}" for v in chain_err6d)
+                #         row3d = "MPJPE".ljust(8) + "".join(f"{v:8.3f}" for v in chain_err3d)
+                #         print(f"\nSample {i}, Chain {chain_idx}:\n{header}\n{row6d}\n{row3d}\n")
+                #
+                #         x = np.arange(len(chain_ids))
+                #         plt.figure()
+                #         plt.plot(x, chain_err6d*1000, marker='o', label='6D_error')
+                #         plt.plot(x, chain_err3d, marker='s', label='MPJPE')
+                #         plt.xticks(x, chain_ids)
+                #         plt.xlabel('Joint ID along chain')
+                #         plt.ylabel('Mean Error')
+                #         plt.title(f'Sample {i} Chain {chain_idx} Error Propagation')
+                #         plt.legend()
+                #         plt.savefig(f'./vis_chain_error/batch_{batch_idx}chain_error_sample_{i}_chain_{chain_idx}.png')
         # 全部评估结束后，打印结果
         self.summarize_results()
 

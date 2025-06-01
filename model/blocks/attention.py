@@ -93,7 +93,7 @@ class Base_STAttention(nn.Module):
 
         # 初始化因果掩码
         self.register_buffer("causal_mask", None)
-        self.causal_mask = self._generate_causal_mask(128)
+        self.causal_mask = self._generate_causal_mask(64)
 
     def _generate_causal_mask(self, T=128,):
         """生成时间维度的因果掩码"""
@@ -197,7 +197,7 @@ if __name__== "__main__":
         flops, params = profile(model, inputs=(input,))
         print(f"{name} FLOPs: {flops:,}")
 
-
+    print(causal_attn(x_3d)[0].shape)
     # 测试 CausalSelfAttention（三维输入）
     test_flops(causal_attn, x_3d, "CausalSelfAttention")
 

@@ -16,13 +16,13 @@ def get_args_parser():
     parser.add_argument('--total-iter', default=200000, type=int, help='number of total iterations to run')
     parser.add_argument('--total-epoch', default=300, type=int, help='number of total epoch to run')
     parser.add_argument('--warm-up-iter', default=1000, type=int, help='number of total iterations for warmup')
-    parser.add_argument('--lr', default=1e-3, type=float, help='max learning rate')
+    parser.add_argument('--lr', default=1e-4, type=float, help='max learning rate')
     parser.add_argument('--lr-scheduler', default=[50, 200], nargs="+", type=int,
                         help="learning rate schedule (iterations)")
     parser.add_argument('--gamma', default=0.05, type=float, help="learning rate decay")
 
     parser.add_argument('--weight-decay', default=0.0, type=float, help='weight decay')
-    parser.add_argument("--commit", type=float, default=0.1, help="hyper-parameter for the commitment loss")
+    parser.add_argument("--commit", type=float, default=0.0001, help="hyper-parameter for the commitment loss")
     parser.add_argument('--loss-vel', type=float, default=0.1, help='hyper-parameter for the velocity loss')
     parser.add_argument('--recons-loss', type=str, default='l2', help='reconstruction loss')
 
@@ -68,7 +68,9 @@ def get_args_parser():
 
     #eval
     parser.add_argument('--data_dir', type=str, default='./data/h3.6m')
-    parser.add_argument('--model_path', type=str, default='./output_vqfinal/h36m_exp_debug/best_model.pth')
+    # parser.add_argument('--model_path', type=str, default='./outputs/h36m_motion_vqvae_transformer/best_model.pth')
+    # parser.add_argument('--model_path', type=str, default='./ckpt/vq_vae/vq_vae_h36m.pth')
+    parser.add_argument('--model_path', type=str, default='./ckpt/vq_vae/h36m_TA-RVQ-large-alhpa=0.1.pth')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--input_length', type=int, default=50)
     parser.add_argument('--predicted_length', type=int, default=25)

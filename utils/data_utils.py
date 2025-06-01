@@ -289,6 +289,121 @@ def convert_rot_mats_to_rot_vecs(rot_mats: torch.Tensor) -> torch.Tensor:
     rot_vecs = rot_vecs_flat.reshape(T, V, 3)
     return rot_vecs
 
+
+def get_adjacency_matrix(dataset_name='h36m'):
+    """
+    获取数据集中使用的关节连接矩阵.
+    """
+    if dataset_name == 'h36m':
+        # H3.6M pairs definition remains unchanged
+        pairs= [
+            (0, 1), (1, 2), (2, 3), (3, 4),(4,5),
+            (0, 6), (6, 7), (7, 8),(8,9),(9, 10),
+            (11, 12),(13, 14), (14, 15),
+            (16,17), (17,18), (18,19),(20,21),(19,22),
+            (24,25), (25, 26), (26, 27),  (28, 29),(27,30)
+        ]
+        num_joints = 32
+        adjacency_matrix = torch.eye(num_joints, dtype=torch.float32)
+        for i, j in pairs:
+            if i < num_joints and j < num_joints:
+                adjacency_matrix[i, j] = 1.0
+                adjacency_matrix[j, i] = 1.0
+    elif dataset_name == '3dpw':
+        # 3DPW (SMPL 24 joints) pairs definition remains unchanged
+        pairs = [
+            (0, 1), (0, 2), (0, 3), (1, 4), (2, 5), (3, 6), (4, 7), (5, 8),
+            (6, 9), (7, 10), (8, 11), (9, 12), (9, 13), (9, 14), (12, 15),
+            (13, 16), (14, 17), (16, 18), (17, 19), (18, 20), (19, 21),
+            (20, 22), (21, 23)
+        ]
+        num_joints = 24
+        adjacency_matrix = torch.eye(num_joints, dtype=torch.float32)
+        for i, j in pairs:
+            if i < num_joints and j < num_joints:
+                adjacency_matrix[i, j] = 1.0
+                adjacency_matrix[j, i] = 1.0
+    elif dataset_name == 'babel': # New entry for BABEL (SMPL-H body without hands)
+        # Corresponds to root_orient (1 joint) + pose_body (21 joints) = 22 joints
+        # Joint mapping (example, assuming root is 0, then body joints follow SMPL-H order):
+        # 0: Pelvis (from root_orient)
+        # 1-21: Body joints (from pose_body, e.g., L_Hip, R_Hip, Spine1, ..., L_Wrist, R_Wrist)
+        # The pairs below map to this 0-21 indexing for these 22 joints.
+        pairs = [
+            # Pelvis connections
+            (0, 1), (0, 2), (0, 3),  # Pelvis to L_Hip, R_Hip, Spine1
+            # Left Leg
+            (1, 4), (4, 7), (7, 10), # L_Hip -> L_Knee -> L_Ankle -> L_Foot (L_Ankle's child)
+            # Right Leg
+            (2, 5), (5, 8), (8, 11), # R_Hip -> R_Knee -> R_Ankle -> R_Foot (R_Ankle's child)
+            # Spine
+            (3, 6), (6, 9),          # Spine1 -> Spine2 -> Spine3
+            # Neck and Head
+            (9, 12), (12, 15),       # Spine3 -> Neck -> Head
+            # Left Arm (via Collar)
+            (9, 13),                 # Spine3 to L_Collar
+            (13, 16),                # L_Collar to L_Shoulder
+            (16, 18),                # L_Shoulder to L_Elbow
+            (18, 20),                # L_Elbow to L_Wrist
+            # Right Arm (via Collar)
+            (9, 14),                 # Spine3 to R_Collar
+            (14, 17),                # R_Collar to R_Shoulder
+            (17, 19),                # R_Shoulder to R_Elbow
+            (19, 21)                 # R_Elbow to R_Wrist
+        ]
+        num_joints = 22 # 1 (root) + 21 (body joints)
+        adjacency_matrix = torch.eye(num_joints, dtype=torch.float32)
+        for i, j in pairs:
+            if i < num_joints and j < num_joints:
+                adjacency_matrix[i, j] = 1.0
+                adjacency_matrix[j, i] = 1.0
+    else:
+        raise ValueError(f"Unsupported dataset name: {dataset_name}. Please use 'h36m', '3dpw', or 'babel_smplh_body'.")
+    return adjacency_matrix
+
+# Example usage:
+# adj_matrix_babel = get_adjacency_matrix('babel_smplh_body')
+# print("BABEL SMPL-H Body Adjacency Matrix (22 joints):")
+# print(adj_matrix_babel)
+# print(adj_matrix_babel.shape)
+
+# adj_matrix_3dpw = get_adjacency_matrix('3dpw')
+# print("\n3DPW Adjacency Matrix (24 joints):")
+# print(adj_matrix_3dpW)
+# print(adj_matrix_3dpw.shape)
+def get_motion_chains(dataset_name='h36m'):
+    """根据数据集名称定义运动链用于可视化"""
+    if dataset_name == 'h36m':  # 32 joints
+        return [  # 示例 H3.6M 运动链 (你需要根据你的32关节定义调整)
+            [0, 1, 2, 3, 4, 5],  # Right Leg
+            [0, 6, 7, 8, 9, 10],  # Left Leg
+            [0, 11, 12, 13, 14, 15],  # Torso, Neck, Head (adjust 11 to be pelvis/root if 0 is not)
+            [12, 16, 17, 18, 19, 20],  # Right Arm (from neck/collar)
+            [12, 24, 25, 26, 27, 28]  # Left Arm (from neck/collar)
+            # 可能还有其他链，如从肩胛骨开始的手臂等
+        ]
+    elif dataset_name == '3dpw':  # SMPL 24 joints
+        # 0:pelvis, 1:r_hip, 2:l_hip, 3:spine1...
+        return [
+            [0, 1, 4, 7, 10],  # Right Leg
+            [0, 2, 5, 8, 11],  # Left Leg
+            [0, 3, 6, 9, 12, 15],  # Spine and Head
+            [9, 13, 16, 18, 20, 22],  # Right Arm chain (from upper spine/collar)
+            [9, 14, 17, 19, 21, 23]  # Left Arm chain (from upper spine/collar)
+        ]
+    elif dataset_name == 'babel_smplh_body':  # 22 joints (root + 21 body)
+        # 0:Pelvis, 1:L_Hip, 2:R_Hip, 3:Spine1 ... 20:L_Wrist, 21:R_Wrist
+        return [
+            [0, 2, 5, 8, 11],  # Right Leg (Pelvis -> R_Hip -> R_Knee -> R_Ankle -> R_Foot)
+            [0, 1, 4, 7, 10],  # Left Leg (Pelvis -> L_Hip -> L_Knee -> L_Ankle -> L_Foot)
+            [0, 3, 6, 9, 12, 15],  # Spine and Head
+            [9, 14, 17, 19, 21],  # Right Arm (Spine3 -> R_Collar -> R_Shoulder -> R_Elbow -> R_Wrist)
+            [9, 13, 16, 18, 20]  # Left Arm (Spine3 -> L_Collar -> L_Shoulder -> L_Elbow -> L_Wrist)
+        ]
+    else:
+        print(f"Warning: Motion chains not defined for dataset {dataset_name}. Returning empty list.")
+        return []
+
 if __name__ == "__main__":
 
   # test rotmat_to_6d

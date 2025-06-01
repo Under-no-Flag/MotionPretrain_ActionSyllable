@@ -68,7 +68,8 @@ def get_args_parser():
 
     #eval
     parser.add_argument('--data_dir', type=str, default='./data/h3.6m')
-    parser.add_argument('--model_path', type=str, default='./output_vqfinal/h36m_exp_debug/best_model.pth')
+    # parser.add_argument('--model_path', type=str, default='./outputs/h36m_motion_vqvae_transformer/best_model.pth')
+    parser.add_argument('--model_path', type=str, default='./ckpt/vqvae/h36m_TA-RVQ-large-alhpa.pth')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--input_length', type=int, default=50)
     parser.add_argument('--predicted_length', type=int, default=25)

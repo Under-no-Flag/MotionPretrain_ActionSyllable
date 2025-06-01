@@ -131,7 +131,7 @@ class Evaluator:
     def load_data(self):
         test_set = Human36mDataset(
             data_dir=self.args.data_dir,
-            split='train',
+            split='test',
             input_length=50,
             predicted_length=25
         )

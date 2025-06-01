@@ -5,14 +5,14 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
+import atexit
 import model.vq_vae as vqvae
 import utils.losses as losses
 import utils.utils_model as utils_model
 from dataset.h36m import HumanVQVAESixDDataSet  # 导入修改后的数据集类
 from model.transformer_vqvae import TransformerVQVAE  # 导入TransformerVQVAE模型
 from options import option_transformer_vqvae  # 导入TransformerVQVAE模型参数配置
-from model.motion_vqvae import MotionVQVAE  # 导入MotionVQVAE模型
+from model.motion_vqvae import MotionVQVAE, PyramidalTAE  # 导入MotionVQVAE模型
 # 禁用警告
 import warnings
 
@@ -111,23 +111,41 @@ if __name__ == "__main__":
     #     seq_len=64,
     #     causal_encoder=True,
     # )
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     net = MotionVQVAE(
         n_heads=4,
         num_joints=32,
         in_dim=6,
-        n_codebook=32,
+        n_codebook=8,
         balance=0,
         n_e=256,
-        e_dim=64,
-        hid_dim=64,
+        e_dim=128,
+        hid_dim=128,
         beta=0.25,
         quant_min_prop=1.0,
         n_layers=[0, 10],
         seq_len=64,
-    )
-    if torch.cuda.is_available():
-        net = net.cuda()
+    ).to(device)
+    ckpt = torch.load(args.model_path, map_location=device)
+    net.load_state_dict(ckpt['net'])
+
+    # net = PyramidalTAE(
+    #     n_heads=4,
+    #     num_joints=32,
+    #     in_dim=6,
+    #     n_codebook=8,
+    #     balance=0,
+    #     n_e=256,
+    #     e_dim=128,
+    #     hid_dim=128,
+    #     beta=0.25,
+    #     quant_min_prop=1.0,
+    #     n_layers=[0, 10],
+    #     seq_len=64,
+    # ).to(device)
+
+
 
 
     optimizer = optim.AdamW(
@@ -181,9 +199,9 @@ if __name__ == "__main__":
 
             # 更新进度条的损失信息（保留4位小数）
             progress_bar.set_postfix(
-                recons_loss=f"{loss_recons.item():.4f}",
-                commit_loss=f"{loss_commit.item():.4f}",
-                total_loss=f"{loss.item():.4f}"
+                recons_loss=f"{loss_recons.item():.6f}",
+                commit_loss=f"{loss_commit.item():.6f}",
+                total_loss=f"{loss.item():.6f}"
             )
 
             # 记录到监控器（假设monitor处理累积或日志）
@@ -210,7 +228,7 @@ if __name__ == "__main__":
                 val_recons += loss_func(recon_val, val_data).item()
 
             val_recons /= len(val_loader)
-            logger.info(f"Validation Loss: {val_recons:.4f}")
+            logger.info(f"Validation Loss: {val_recons:.6f}")
             writer.add_scalar('Val/Recons', val_recons, epoch)
 
             scheduler.step(val_recons)
@@ -229,9 +247,9 @@ if __name__ == "__main__":
 
         avg_recon, avg_commit, avg_geo = monitor.get_avg_losses()
         logger.info(f"Epoch {epoch} Average: "
-              f"Recon: {avg_recon:.4f} "
-              f"Commit: {avg_commit:.4f} "
-              f"Geo: {avg_geo:.4f} \n")
+              f"Recon: {avg_recon:.6f} "
+              f"Commit: {avg_commit:.6f} "
+              f"Geo: {avg_geo:.6f} \n")
 
 
     logger.info("Training Completed!")

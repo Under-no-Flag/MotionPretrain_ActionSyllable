@@ -1,0 +1,47 @@
+project_name: human_pose_vqvae          # SwanLab project
+exp_name: h36m_TA-RVQ_EMA_ln_refined_relu      # Experiment name
+api_key: "HNhNWnshY9MR904fNdKBU"
+seed: 42
+# data
+dataset: h36m
+dataset_class: dataset.h36m.HumanVQVAESixDDataSet
+data_root: ./data/h3.6m
+window_size: 64
+nb_joints: 32
+in_dim: 6
+# training
+batch_size: 16
+lr: 0.0005
+weight_decay: 0.01
+lr_patience: 8
+total_epoch: 300
+commit: 0.01                # weighting for commitment loss
+recons_loss: l1            # l1 | l2
+log_interval: 5           # SwanLab log frequency (steps)
+# model hyper‑parameters
+n_heads: 4
+n_codebook: 6
+balance: 0
+n_e: 1024
+e_dim: 128
+hid_dim: 128
+beta: 0.25
+quant_min_prop: 1.0
+n_layers: [0, 10]
+seq_len: 64
+# misc
+out_dir: ./outputs
+#model_path: "./output_vqfinal/h36m_exp_debug/best_model.pth"             # optional pretrained ckpt
+model_path: ""             # optional pretrained ckpt
+best_init: 10000000           # initial best val‑loss (big number)
+
+
+
+#eval
+print_log: true
+work_dir: "./work_dir"
+device: "cuda:0"
+eval_model_path: "./ckpt/vqvae/h36m_TA-RVQ-large-alhpa.pth"             # optional eval ckpt
+# --- 可视化相关 (如果需要调整) ---
+save_visualizations: false # 是否保存可视化结果
+num_samples_to_visualize: 5 # 可视化多少个样本的误差传播图

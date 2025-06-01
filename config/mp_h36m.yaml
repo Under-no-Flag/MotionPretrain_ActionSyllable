@@ -1,0 +1,44 @@
+# ----------------- experiment -----------------
+exp_name: gpt_seq2seq_sw
+project_name: motion-gpt
+api_key: "HNhNWnshY9MR904fNdKBU"
+out_dir: ./outputs
+
+# ----------------- data -----------------------
+data_root: ./data/h3.6m
+split_train: train
+split_val: val
+hist_len: 50
+pred_len: 25
+batch_size: 32
+
+# ----------------- optimisation ---------------
+epochs: 100
+lr: 0.001
+weight_decay: 0.0001
+lr_patience: 5
+label_smooth: 0.0
+log_interval: 10
+seed: 42
+
+# ----------------- VQVAE ----------------------
+vqvae:
+  n_heads: 4
+  num_joints: 32
+  in_dim: 6
+  n_codebook: 8
+  balance: 0
+  n_e: 512
+  e_dim: 64
+  hid_dim: 64
+  beta: 0.25
+  quant_min_prop: 1.0
+  n_layers: [0, 10]
+  seq_len: 64
+vqvae_ckpt: ./ckpt/vqvae/vq_vae_h36m.pth
+
+# ----------------- GPT ------------------------
+seq_len: 512
+n_head: 4
+embed_dim: 32
+n_layers: 3

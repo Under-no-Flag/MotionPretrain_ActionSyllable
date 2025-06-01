@@ -23,8 +23,10 @@ class ReConsLoss(nn.Module):
         :return:
         '''
         # loss = self.Loss(motion_pred[..., : self.motion_dim], motion_gt[..., :self.motion_dim])
-        loss = torch.mean(torch.norm(motion_pred - motion_gt, dim=-1, p=1))
+        loss = torch.mean(torch.norm(motion_pred - motion_gt, dim=-1, p=2))
+        # loss=nn.MSELoss()(motion_pred.reshape(-1,6), motion_gt.reshape(-1,6))
         return loss
+
 
 
 class GeometricConstraintLoss(nn.Module):

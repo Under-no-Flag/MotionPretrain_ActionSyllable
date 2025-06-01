@@ -32,7 +32,7 @@ class Human36mDataset(Dataset):
                  use_tiny_dataset=True,
                  max_seq_len=51,
                  ):
-        self.path_to_data = os.path.join(data_dir,f'h36m_{split}_{input_length+predicted_length}.npz')
+        self.path_to_data = os.path.join(data_dir,f'h36m_{split}.npz')
 
         self.input_length = input_length
         self.predicted_length = predicted_length
@@ -92,7 +92,7 @@ class HumanVQVAESixDDataSet(Dataset):
         """
         增加 xyz 的读取和拆分，便于后续计算 MPJPE
         """
-        self.path_to_data = os.path.join(data_dir, f'h36m_{split}_{input_length + predicted_length}.npz')
+        self.path_to_data = os.path.join(data_dir, f'h36m_{split}.npz')
         self.max_seq_len = max_seq_len
         self.sixd_scale = sixd_scale
 
@@ -252,8 +252,8 @@ class H36MClfDataset(Dataset):
         # ---------- 1. 读取 npz ----------
         npz_path = os.path.join(data_dir, f'h36m_{split}.npz') \
                    if not os.path.exists(os.path.join(
-                       data_dir, f'h36m_{split}_75.npz')) \
-                   else os.path.join(data_dir, f'h36m_{split}_75.npz')
+                       data_dir, f'h36m_{split}.npz')) \
+                   else os.path.join(data_dir, f'h36m_{split}.npz')
 
         data = np.load(npz_path, allow_pickle=True)
         all_sixd  = data['sampled_sixd_seq']   # (N,T,V,6)
@@ -333,6 +333,54 @@ def create_h36m_clf_dataloader(
 
     return dataloader
 
+class SyllableDataset(Dataset):
+    """Dataset for motion syllable evaluation/visualisation."""
+
+    def __init__(
+        self,
+        data_dir: str,
+        split: str = "val",
+        downsample_rate: int = 2,
+    ) -> None:
+        super().__init__()
+
+        npz_path = os.path.join(data_dir, f"h36m_{split}.npz")
+        if not os.path.isfile(npz_path):
+            raise FileNotFoundError(f"NPZ file not found: {npz_path}")
+
+        data = np.load(npz_path, allow_pickle=True)
+        self.xyz_all = data["sampled_xyz_seq"]        # (N,T,V,3)
+        self.rot6d_all = data.get("sampled_sixd_seq", None)  # (N,T,V,6) optional
+        self.labels = data.get("label_seq", np.zeros(len(self.xyz_all), dtype=int))
+        data.close()
+
+        self.xyz, self.rot6d, self.action = [], [], []
+        for xyz, rot6d, lbl in tqdm(
+            zip(self.xyz_all, self.rot6d_all, self.labels),
+            total=len(self.xyz_all), desc=f"Down‑sampling {split}"):
+            xyz_ds = xyz[::downsample_rate]  # (T',V,3)
+            rot_ds = (
+                rot6d[::downsample_rate]
+                if rot6d is not None else np.zeros((*xyz_ds.shape[:2], 6), np.float32)
+            )
+            self.xyz.append(xyz_ds)
+            self.rot6d.append(rot_ds)
+            self.action.append(int(lbl))
+
+    # ------------------------------------------------------------
+    def __len__(self):
+        return len(self.xyz)
+
+    def __getitem__(self, idx):
+        return self.rot6d[idx], self.xyz[idx], self.action[idx]
+
+def collate_fn(batch, pad_val=0.0):
+    rot6d, xyz, lbl = zip(*batch)
+    len_t = torch.tensor([r.size(0) for r in rot6d], dtype=torch.long)
+    rot_pad = pad_sequence(rot6d, batch_first=True, padding_value=pad_val)  # (B,L,V,6)
+    xyz_pad = pad_sequence(xyz, batch_first=True, padding_value=pad_val)    # (B,L,V,3)
+    lbl = torch.tensor(lbl, dtype=torch.long)
+    return rot_pad, xyz_pad, len_t, lbl
 if __name__=="__main__":
 
 

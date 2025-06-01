@@ -1,0 +1,50 @@
+project_name: human_pose_vqvae          # SwanLab project
+exp_name: babel_TA-RVQ_large     # Experiment name
+api_key: "HNhNWnshY9MR904fNdKBU"
+seed: 42
+# data
+dataset: babel
+dataset_class: dataset.babel.BabelTotalCaptureDataset
+data_root: ./data/babel_processed/totalcapture_body_aa_root_splits
+
+graph:
+window_size: 64
+nb_joints: 22
+in_dim: 6
+# training
+batch_size: 16
+lr: 0.0005
+weight_decay: 0.01
+lr_patience: 8
+total_epoch: 1000
+commit: 0.01                # weighting for commitment loss
+recons_loss: l1            # l1 | l2
+log_interval: 5           # SwanLab log frequency (steps)
+# model hyper‑parameters
+n_heads: 4
+n_codebook: 6
+balance: 0
+n_e: 1024
+e_dim: 128
+hid_dim: 128
+beta: 0.25
+quant_min_prop: 1.0
+n_layers: [0, 10]
+seq_len: 64
+# misc
+out_dir: ./outputs
+#model_path: "./output_vqfinal/h36m_exp_debug/best_model.pth"             # optional pretrained ckpt
+model_path: ""             # optional pretrained ckpt
+best_init: 10000000           # initial best val‑loss (big number)
+
+
+#eval
+num_betas_model: 16
+print_log: true
+work_dir: "./work_dir"
+device: "cuda:0"
+smplh_model_base_path: "./data/amass/smplh"
+eval_model_path: "./outputs/babel_babel_TA-RVQ_large/best_model.pth"             # optional eval ckpt
+# --- 可视化相关 (如果需要调整) ---
+save_visualizations: false # 是否保存可视化结果
+num_samples_to_visualize: 5 # 可视化多少个样本的误差传播图

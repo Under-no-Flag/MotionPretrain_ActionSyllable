@@ -1,139 +1,161 @@
-import os, json, torch, torch.nn as nn
+# ===========================  train_mp_sw.py  ===========================
+import argparse, os, json, yaml, atexit, signal, sys, torch, torch.nn as nn
 import torch.optim as optim
+from types import SimpleNamespace
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import swanlab                                                   # pip install swanlab
 
 from dataset.h36m import H36MSeq2Seq
-from model.motion_vqvae   import MotionVQVAE
-from model.downstream_models    import MotionGPT
-import utils.utils_model  as utm
+from model.motion_vqvae import MotionVQVAE
+from model.downstream_models import MotionGPT
+import utils.utils_model as utm
 
-# ------------------ A. 参数 ------------------
-class Args:
-    data_root     = './data/h3.6m'
-    split_train   = 'train'
-    split_val     = 'val'
-    hist_len      = 50
-    pred_len      = 25
-    batch_size    = 16
-    epochs        = 100
-    lr            = 2e-3
-    weight_decay  = 1e-4
-    exp_name      = 'gpt_seq2seq'
-    out_dir       = './checkpoints'
-    seed          = 42
-    label_smooth  = 0.0
 
-args = Args(); torch.manual_seed(args.seed)
-save_dir = os.path.join(args.out_dir, args.exp_name); os.makedirs(save_dir, exist_ok=True)
-logger = utm.get_logger(save_dir);  writer = SummaryWriter(save_dir)
-logger.info(json.dumps(vars(args), indent=2))
+# --------------------------- 辅助函数 ----------------------------------
+def _dotdict(d: dict):
+    return SimpleNamespace(**d)
 
-# ------------------ B. 数据 ------------------
-train_set = H36MSeq2Seq(args.data_root, args.split_train,
-                        args.hist_len+args.pred_len, 1.0)
-val_set   = H36MSeq2Seq(args.data_root, args.split_val,
-                        args.hist_len+args.pred_len, 1.0)
-train_loader = DataLoader(train_set, batch_size=args.batch_size,
-                          shuffle=True)
-val_loader   = DataLoader(val_set,   batch_size=args.batch_size)
 
-# ------------------ C. 模型 ------------------
-vqvae = MotionVQVAE(
-    n_heads=4, num_joints=32, in_dim=6, n_codebook=32,
-    balance=0, n_e=256, e_dim=128, hid_dim=128, beta=0.25,
-    quant_min_prop=1.0, n_layers=[0, 6], seq_len=64
-)
+def load_config(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return _dotdict(yaml.safe_load(f))
 
-# 加载vqvae的预训练权重
-vqvae.load_state_dict(torch.load('./checkpoints/vqvae/vq_vae_h36m.pth')['net'])
-vqvae.eval();
-vqvae.cuda()
 
-gpt = MotionGPT(vqvae,
-                n_head=4,
-                embed_dim=32,
-                n_layers=1,
-                ).cuda()
-for p in gpt.vqvae.parameters(): p.requires_grad_(False)
+def _register_swanlab_exit():
+    """确保 Ctrl-C / kill 时能正常 swanlab.finish()"""
+    def _graceful(_sig=None, _frm=None):
+        swanlab.finish(); sys.exit(0)
 
-opt = optim.AdamW(filter(lambda p: p.requires_grad, gpt.parameters()),
-                  lr=args.lr, weight_decay=args.weight_decay)
-sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', 0.5, 5, verbose=True)
-ce = nn.CrossEntropyLoss(label_smoothing=args.label_smooth)
+    atexit.register(swanlab.finish)
+    signal.signal(signal.SIGINT,  _graceful)
+    signal.signal(signal.SIGTERM, _graceful)
 
-# ------------------ D. 训练 ------------------
-best = 1e9
-for epoch in range(args.epochs):
-    gpt.train(); total_loss = 0
-    pbar = tqdm(train_loader, desc=f'E{epoch}')
-    for x_hist, x_fut, _ in pbar:
-        x_hist, x_fut = x_hist.cuda(), x_fut.cuda()   # (B,Thist,V,6) / (B,Tpred,V,6)
-        # 1) 量化历史+未来，拿到 code indices
+
+# ======================================================================
+def main():
+    # ------------------------- CLI / YAML -----------------------------
+    parser = argparse.ArgumentParser(
+        description="MotionGPT seq-to-seq training with SwanLab tracking")
+    parser.add_argument("--config", type=str, required=True,
+                        help="path to yaml config")
+    cli = parser.parse_args()
+    cfg = load_config(cli.config)          # -> cfg.xxx
+
+    # ------------------ reproducibility -------------------------------
+    torch.manual_seed(cfg.seed)
+
+    # ------------------ logging dirs ----------------------------------
+    out_dir = os.path.join(cfg.out_dir, cfg.exp_name)
+    os.makedirs(out_dir, exist_ok=True)
+    writer  = SummaryWriter(out_dir)
+    logger  = utm.get_logger(out_dir)
+    logger.info("Loaded cfg:\n" + json.dumps(vars(cfg), indent=2))
+
+    # ------------------ SwanLab ---------------------------------------
+    swanlab.login(api_key=cfg.api_key, save=True)
+    sw_run = swanlab.init(project=cfg.project_name,
+                          name=cfg.exp_name,
+                          config=vars(cfg))
+    # _register_swanlab_exit()      # 可按需开启
+
+    # ------------------ dataset ---------------------------------------
+    train_set = H36MSeq2Seq(cfg.data_root, cfg.split_train,
+                            cfg.hist_len + cfg.pred_len, 1.0)
+    val_set   = H36MSeq2Seq(cfg.data_root, cfg.split_val,
+                            cfg.hist_len + cfg.pred_len, 1.0)
+
+    train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True)
+    val_loader   = DataLoader(val_set,   batch_size=cfg.batch_size, shuffle=False)
+
+    # ------------------ model -----------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ① 冻结好的 VQVAE
+    vqvae = MotionVQVAE(**cfg.vqvae).to(device)
+    vq_ckpt = torch.load(cfg.vqvae_ckpt, map_location=device)
+    vqvae.load_state_dict(vq_ckpt["net"]); vqvae.eval()
+    for p in vqvae.parameters(): p.requires_grad_(False)
+
+    # ② MotionGPT
+    gpt = MotionGPT(vqvae,
+                    n_ctx=cfg.seq_len,
+                    n_head=cfg.n_head,
+                    embed_dim=cfg.embed_dim,
+                    n_layers=cfg.n_layers).to(device)
+
+    opt   = optim.AdamW(gpt.parameters(), lr=cfg.lr,
+                        weight_decay=cfg.weight_decay)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode="min", factor=0.5, patience=cfg.lr_patience, verbose=True)
+    ce_fn = nn.CrossEntropyLoss(label_smoothing=cfg.label_smooth)
+    K     = gpt.codebook_sz
+
+    # ------------------ training loop ---------------------------------
+    best_val = 1e9
+    global_step = 0
+
+    for epoch in range(cfg.epochs):
+        # ===== Train ==================================================
+        gpt.train(); train_loss = 0.0
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+        for x_hist, x_fut, _ in pbar:
+            x_hist, x_fut = x_hist.to(device), x_fut.to(device)
+
+            logits, tgt = gpt(x_hist,
+                              pred_len=cfg.pred_len,
+                              teacher_force=True,
+                              future_seq=x_fut)          # [B,Tp,V,n_q,K]
+
+            loss = ce_fn(logits.reshape(-1, K), tgt.reshape(-1))
+
+            opt.zero_grad(); loss.backward(); opt.step()
+            train_loss += loss.item() * x_hist.size(0)
+
+            if global_step % cfg.log_interval == 0:
+                swanlab.log({"train/ce": loss.item(),
+                             "lr": opt.param_groups[0]["lr"]},
+                            step=global_step)
+            global_step += 1
+            pbar.set_postfix(ce=f"{loss.item():.4f}")
+
+        train_ce = train_loss / len(train_set)
+
+        # ===== Validation ============================================
+        gpt.eval(); val_loss = 0.0
         with torch.no_grad():
-            _,_, idx = gpt.vqvae(
-                x=torch.cat([x_hist, x_fut], dim=1),  # (B,Tall,V,6)
-                y=0, valid=torch.ones(x_hist.size(0), x_hist.size(1)+x_fut.size(1)).cuda()
-            )
-        if idx.dim()==3: idx = idx.unsqueeze(-1)      # (B,T,V,1)
-        # -------- 2) 构造 LM 输入 / 目标 ----------------------
-        inp = idx[:, :-1]  # [B,T-1,V,1]  ⟵ 位置 t=0..T-2
-        tgt_lvl0 = idx[:, 1:, :, 0]  # [B,T-1,V]    ⟵ 仅第 0 级
-        B, Tm1, V, _ = inp.shape
+            for x_hist, x_fut, _ in tqdm(val_loader):
+                x_hist, x_fut = x_hist.to(device), x_fut.to(device)
+                logits, tgt = gpt(x_hist, cfg.pred_len,
+                                  teacher_force=True,
+                                  future_seq=x_fut)
+                val_loss += ce_fn(logits.reshape(-1, K),
+                                  tgt.reshape(-1)).item() * x_hist.size(0)
+        val_ce = val_loss / len(val_set)
 
-        # loss 只计算在 “未来帧” (t ≥ hist_len) 位置
-        future_mask = torch.zeros_like(tgt_lvl0, dtype=torch.bool)
-        future_mask[:, args.hist_len - 1:] = True  # 对应 inp 的索引
+        # ---- Scheduler & Log ---------------------------------------
+        sched.step(val_ce)
+        writer.add_scalar("train/ce", train_ce, epoch)
+        writer.add_scalar("val/ce",   val_ce,   epoch)
+        swanlab.log({"val/ce": val_ce}, step=global_step)
+        logger.info(f"Epoch {epoch}: train_ce={train_ce:.4f}  val_ce={val_ce:.4f}")
 
-        # -------- 3) Transformer 前向一次 -------------------
-        attn_mask = gpt.generate_causal_mask(Tm1, V, inp.device)
-        h = gpt.transformer(inp, attention_mask=attn_mask)  # [B,T-1,V,D]
+        # ---- Save best --------------------------------------------
+        if val_ce < best_val:
+            best_val = val_ce
+            ckpt_path = os.path.join(out_dir, "best_seq2seq.pth")
+            torch.save({"gpt": gpt.state_dict(),
+                        "epoch": epoch,
+                        "val_ce": val_ce},
+                       ckpt_path)
+            swanlab.log({"best/val_ce": best_val}, step=global_step)
+            logger.info(f"New best saved to {ckpt_path}")
 
-        logits_lvl0 = torch.stack(  # [B,T-1,V,K]
-            [gpt.joint_heads[str(j)](h[..., j, :]) for j in range(V)], 2
-        )
-
-        loss = ce(logits_lvl0[future_mask], tgt_lvl0[future_mask])
-
-        opt.zero_grad(); loss.backward(); opt.step()
-        total_loss += loss.item() * x_hist.size(0)
-        pbar.set_postfix(loss=f'{loss.item():.4f}')
+    # ------------------ finish ----------------------------------------
+    swanlab.finish()
+    logger.info(f"Finished. Best val CE = {best_val:.4f}")
 
 
-    # ------------------ E. 验证 ------------------
-    gpt.eval(); val_loss = 0
-    with torch.no_grad():
-        for x_hist, x_fut, _ in val_loader:
-            x_all = torch.cat([x_hist, x_fut], 1).cuda()
-            _,_, idx = gpt.vqvae(
-                x=x_all,  # (B,Tall,V,6)
-                y=0, valid=torch.ones(x_hist.size(0), x_hist.size(1)+x_fut.size(1)).cuda()
-            )
-            if idx.dim()==3: idx = idx.unsqueeze(-1)
-            inp      = idx[:, :-1]
-            tgt_lvl0 = idx[:, 1:, :, 0]
-            future_mask = torch.zeros_like(tgt_lvl0, dtype=torch.bool)
-            future_mask[:, args.hist_len-1:] = True
-
-            attn_mask = gpt.generate_causal_mask(inp.size(1), V, inp.device)
-            h = gpt.transformer(inp, attention_mask=attn_mask)
-            logits_lvl0 = torch.stack(
-                [gpt.joint_heads[str(j)](h[..., j, :]) for j in range(V)], 2
-            )
-
-            val_loss += ce(logits_lvl0[future_mask],
-                           tgt_lvl0[future_mask]).item() * x_all.size(0)
-
-    val_loss /= len(val_set)
-    sched.step(val_loss)
-    writer.add_scalar('train/ce', total_loss/len(train_set), epoch)
-    writer.add_scalar('val/ce',   val_loss,                  epoch)
-    logger.info(f'Epoch {epoch}: train={total_loss/len(train_set):.4f} val={val_loss:.4f}')
-
-    if val_loss < best:
-        best = val_loss
-        torch.save({'gpt': gpt.state_dict(),
-                    'epoch': epoch, 'val': val_loss},
-                   os.path.join(save_dir, 'best_seq2seq.pth'))
-logger.info('Done.')
+if __name__ == "__main__":
+    main()
